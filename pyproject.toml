@@ -1,0 +1,29 @@
+[project]
+name = "tic-tac-fly"
+version = "0.1.0"
+description = "Fruit fly connectome reservoir computer playing Tic-Tac-Toe"
+authors = [
+    {name = "LosEvons", email = "emil.malk@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "streamlit>=1.35.0,<2.0.0",
+    "numpy>=2.1.0,<3.0.0",
+    "scikit-learn>=1.4.0,<2.0.0",
+    "matplotlib>=3.8.0,<4.0.0",
+    "fafbseg>=3.2.2,<4.0.0",
+    "python-dotenv>=1.2.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0,<9.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tic_tac_fly"]
