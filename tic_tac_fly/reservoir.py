@@ -2,7 +2,9 @@ import os
 from pathlib import Path
 import numpy as np
 from dotenv import load_dotenv
-from sklearn.linear_model import RidgeClassifier
+from sklearn.linear_model import RidgeCV
+
+from tic_tac_fly.minmax import enumerate_o_moves, minmax_move_values
 
 load_dotenv()
 
@@ -96,32 +98,63 @@ class FlyReservoir:
         
         return x
     
-def train_baseline_readout(
-    reservoir: FlyReservoir,
-    samples: int = 1200,
-    seed: int = 42
-) -> RidgeClassifier:
-    rng = np.random.default_rng(seed)
-    X_train_boards = []
-    y_train_moves = []
+class SquareRidgeReadout:
+    # Fit one regressor per square.
+    def __init__(self, alphas = np.logspace(-6, 1, 25)):
+        self.models = [RidgeCV(alphas=alphas) for _ in range(9)]
     
-    for _ in range(samples):
-        b = rng.choice([0, 1, -1], size=9, p=[0.5, 0.3, 0.2])
-        emptys = np.where(b == 0)[0]
-        if len(emptys) > 0:
-            # Simple heuristic: center first, then random legal square
-            target = 4 if 4 in emptys else rng.choice(emptys)
-            X_train_boards.append(b)
-            y_train_moves.append(target)
+    def fit(self,
+            X: np.ndarray,
+            boards: np.ndarray,
+            y: np.ndarray) -> "SquareRidgeReadout":
+        for square, model in enumerate(self.models):
+            mask = boards[:, square] == 0
+            model.fit(X[mask], y[mask, square])
+        return self
     
-    # Simulate boards (project into the biological states)
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.column_stack([model.predict(X) for model in self.models])
+    
+def train_minmax_readout(reservoir: FlyReservoir) -> SquareRidgeReadout:
+    boards = enumerate_o_moves() # enumerate all game states
     X_train_states = np.array([
         reservoir.simulate(
             b, spectral_radius=0.95, leak_rate=0.35, simulation_steps=25
-        ) for b in X_train_boards
+        ) for b in boards
     ])
-    
-    # Fit linear regression layer
-    readout = RidgeClassifier(alpha=1.0)
-    readout.fit(X_train_states, y_train_moves)
+    boards_array = np.array(boards)
+    raw = np.array([minmax_move_values(b) for b in boards])
+    y_train_values = np.nan_to_num(raw, nan=0.0)
+    readout = SquareRidgeReadout()
+    readout.fit(X_train_states, boards_array, y_train_values)
     return readout
+    
+# def train_baseline_readout(
+#     reservoir: FlyReservoir,
+#     samples: int = 1200,
+#     seed: int = 42
+# ) -> RidgeClassifier:
+#     rng = np.random.default_rng(seed)
+#     X_train_boards = []
+#     y_train_moves = []
+    
+#     for _ in range(samples):
+#         b = rng.choice([0, 1, -1], size=9, p=[0.5, 0.3, 0.2])
+#         emptys = np.where(b == 0)[0]
+#         if len(emptys) > 0:
+#             # Simple heuristic: center first, then random legal square
+#             target = 4 if 4 in emptys else rng.choice(emptys)
+#             X_train_boards.append(b)
+#             y_train_moves.append(target)
+    
+#     # Simulate boards (project into the biological states)
+#     X_train_states = np.array([
+#         reservoir.simulate(
+#             b, spectral_radius=0.95, leak_rate=0.35, simulation_steps=25
+#         ) for b in X_train_boards
+#     ])
+    
+#     # Fit linear regression layer
+#     readout = RidgeClassifier(alpha=1.0)
+#     readout.fit(X_train_states, y_train_moves)
+#     return readout
