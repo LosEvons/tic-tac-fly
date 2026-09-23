@@ -1,106 +1,91 @@
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass
+from itertools import accumulate
+from typing import Iterable, Iterator, NamedTuple
+
 import numpy as np
 
-WINNING_LINES = (
-    (0, 1, 2), (3, 4, 5), (6, 7, 8),
-    (0, 3, 6), (1, 4, 7), (2, 5, 8),
-    (0, 4, 8), (2, 4, 6),
-)
+from tic_tac_fly.game.board import BOARD_SIZE, Board, Player
 
-def get_legal_moves(board: np.ndarray) -> np.ndarray:
-    return np.where(board == 0)[0]
 
-def check_whose_turn(board: np.ndarray) -> int:
-    n_x = int(np.count_nonzero(board == 1))
-    n_o = int(np.count_nonzero(board == -1))
-    if n_x == n_o:
-        return 1 # X turn
-    if n_x == n_o + 1:
-        return -1 # O turn
-    raise ValueError(f"Illegal board when checking whose turn!")
-
-def check_winner(board: np.ndarray) -> int | None:
-    for line in WINNING_LINES:
-        hits = int(board[list(line)].sum())
-        if hits == 3:
-            return 1
-        if hits == -3:
-            return -1
-    return None
-
-def check_draw(board: np.ndarray) -> bool:
-    return check_winner(board) is None and not np.any(board == 0)
-
-def check_is_terminal(board: np.ndarray) -> bool:
-    return check_winner(board) is not None or check_draw(board)
-
-def enumerate_o_moves() -> list[np.ndarray]:
-    # Get all reachable non terminal boards on O's turn.
-    # A tree DFS from an empty board. All possibilities (since tic-tac-toe doesn't have that many).
-    seen: set[bytes] = set() # For deduplicating moves
-    to_move: dict[bytes, np.ndarray] = {}
-    
-    def recurse(board: np.ndarray):
-        k = board.tobytes()
-        if k in seen:
-            return
-        seen.add(k)
-        if check_is_terminal(board):
-            return
-        turn = check_whose_turn(board)
-        if turn == -1:
-            to_move[k] = board.copy()
-        
-        for move in get_legal_moves(board):
-            next_state = board.copy()
-            next_state[move] = turn
-            recurse(next_state)
-    
-    recurse(np.zeros(9, dtype= int)) #np.int8
-    return list(to_move.values())
-
-def search(
-    board: np.ndarray,
-    alpha: float,
+class ABWindow(NamedTuple):
+    value: float
+    alpha: float
     beta: float
-    ) -> float:
-    depth = int(np.count_nonzero(board)) 
-    winner = check_winner(board)
-    if winner == -1:
-        return 1.0 - 0.01 * depth # Prefer to win, but also to win faster. 0.01 is just what scales that preference
-    if winner == 1:
-        return -1.0 + 0.01 * depth # And same the other way around
-    if check_draw(board):
-        return 0.0
     
-    turn = check_whose_turn(board)
-    if turn == -1: # Maximize O's turn value
-        value = -np.inf
-        for move in get_legal_moves(board):
-            next_state = board.copy()
-            next_state[move] = -1
-            value = max(value, search(next_state, alpha, beta))
-            alpha = max(alpha, value)
-            if alpha >= beta:
-                break
-        return value
-    else: # Minimize X's turn value
-        value = np.inf
-        for move in get_legal_moves(board):
-            next_state = board.copy()
-            next_state[move] = 1
-            value = min(value, search(next_state, alpha, beta))
-            beta = min(beta, value)
-            if beta <= alpha:
-                break
-        return value
+    @property
+    def cutoff(self) -> bool:
+        return self.alpha >= self.beta
+    
 
-def minmax_move_values(board: np.ndarray) -> np.ndarray:
-    # A vector of size 9 of minmax values (from O perspective)
-    # Prefers fater wins and slower losses. Always win > draw > loss
-    # Always compute each root from (-inf, inf) alpha-beta. This is crude, but the game being played right now is simple enough for it.
-    values = np.full(9, np.nan, dtype=np.float64)
-    for move in get_legal_moves(board):
-        next_state = board.copy()
-        next_state[move] = -1
-        values[move] = search(next_state, alpha=-np.inf, beta=np.inf)
-    return values
+def _last(items: Iterable[ABWindow]) -> ABWindow:
+    """Run to the end of an iterator and return last element"""
+    return deque(items, maxlen=1)[0]
+
+def _until_cutoff(windows: Iterable[ABWindow]) -> Iterator[ABWindow]:
+    """Yield AB windows until the search window closes."""
+    for window in windows:
+        yield window
+        if window.cutoff:
+            return
+        
+
+@dataclass
+class MinmaxSolver:
+    """A-B search to score legal moves from O's POV"""
+    maximiser: Player = Player.O
+    depth_penalty: float = 0.01 # Penalise slower wins 
+    
+    def terminal_value(self, board: Board) -> float | None:
+        outcome = board.outcome()
+        if outcome.winner is self.maximiser:
+            return 1.0 - self.depth_penalty * board.occupied
+        if outcome.winner is not None:
+            return -1.0 + self.depth_penalty * board.occupied
+        return 0.0 if outcome.is_draw else None
+    
+    def search(self, board: Board, a: float = -np.inf, b: float = np.inf) -> float:
+        terminal_value = self.terminal_value(board)
+        if terminal_value is not None:
+            return terminal_value
+        turn = board.turn()
+        maxing = turn is self.maximiser
+        
+        def eval_move(window: ABWindow, square: int) -> ABWindow:
+            c = self.search(board.play(int(square), turn), window.alpha, window.beta)
+            if maxing:
+                v = max(window.value, c)
+                return ABWindow(v, max(window.alpha, v), window.beta)
+            else:
+                v = min(window.value, c)
+                return ABWindow(v, window.alpha, min(window.beta, v))
+        
+        initial_bounds = ABWindow(-np.inf if maxing else np.inf, a, b)
+        windows = accumulate(
+            board.legal_moves(),
+            eval_move,
+            initial=initial_bounds
+        )
+        return float(_last(_until_cutoff(windows)).value)
+    
+    def score_legal_moves(self, board: Board) -> np.ndarray:
+        """The values of all legal moves per square (np.nan when occupied)"""
+        return np.array([
+            self.search(board.play(square, self.maximiser))
+            if board[square] == 0 else np.nan
+            for square in range(BOARD_SIZE)
+        ])
+        
+    def training_targets(self, board: Board) -> np.ndarray:
+        """score_legal_moves with occupied squares zeroed.
+        Used when training to make sure readout masks them out.
+        """
+        return np.nan_to_num(self.score_legal_moves(board), nan=0.0)
+    
+    def best_moves(self, board: Board, tolerance: float = 1e-9) -> frozenset[int]:
+        v = self.score_legal_moves(board)
+        return frozenset(
+            int(score) for score in np.flatnonzero(v >= np.nanmax(v) - tolerance)
+        )
