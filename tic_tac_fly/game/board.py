@@ -1,3 +1,11 @@
+"""
+The rules of tic-tac-toe: players, moves, outcomes, boards and games.
+Board is a flat array of 9 squares numbered row-wise.
+Each square has value +1, 0, -1 for X, _, O. (X and O being the two players obviously)
+A line summing to 3 is a win for X and to -3 for O.
+"""
+
+
 from __future__ import annotations
 
 from enum import IntEnum
@@ -21,10 +29,11 @@ WINNING_LINES: tuple[tuple[int, int, int], ...] = (
 BOARD_SIZE = 9
 
 _LINES = np.array(WINNING_LINES)
-_SQUARES = np.array(BOARD_SIZE)
+_SQUARES = np.arange(BOARD_SIZE)
 
 
 class Player(IntEnum):
+    """Representation of a player/agent, valued by the number written on a square"""
     X = 1
     O = -1
 
@@ -38,17 +47,21 @@ class Player(IntEnum):
 
 
 class Move(NamedTuple):
+    """One square changed. Which square, and who changed it."""
     square: int
     player: Player
 
     def one_hot(self) -> np.ndarray:
-        # Input vector the reservoir consumes
+        """Signed one-hot input vector for the reservoir
+        Represents the "sensory stimulus" of a single move for the reservoir.
+        """
         v = np.zeros(BOARD_SIZE)
         v[self.square] = int(self.player)
         return v
 
 
 class Outcome(NamedTuple):
+    """Result of a position. Who wins or is it a draw."""
     winner: Player | None
     is_draw: bool
 
@@ -58,11 +71,15 @@ class Outcome(NamedTuple):
 
 
 class Board:
-    """Immutable board position."""
+    """Immutable board position.
+    Squares are stored in an immutable int8 array. Play returns a new board.
+    Boards can compare and hash by their content, which allows for keying and easy deduplication.
+    """
 
     __slots__ = ("_cells",)
 
     def __init__(self, cells: Sequence[int] | np.ndarray | None = None):
+        """Create board from 9 vlaues (+1, -1, 0). If no previous arrangement is specified, creates an empty board."""
         if cells is None:
             a = np.zeros(BOARD_SIZE, dtype=np.int8)
         else:
@@ -108,6 +125,7 @@ class Board:
         return np.flatnonzero(self._cells == int(player))
 
     def turn(self) -> Player:
+        """Return whose turn it is to move (X | O). Inferred from piece counts."""
         n_X = int(np.count_nonzero(self._cells == Player.X))
         n_O = int(np.count_nonzero(self._cells == Player.O))
         if n_X == n_O:
@@ -117,14 +135,15 @@ class Board:
         raise ValueError(f"Illegal position: n_X={n_X} & x_O={n_O}.")
 
     def play(self, square: int, player: Player | None = None) -> Board:
-        """Return a new board with a square filled"""
+        """Return a new board with a square filled with the value of player"""
         if self._cells[square] != 0:
             raise ValueError(f"{square} is occupied.")
         player = player if player is not None else self.turn()
         return Board(np.where(_SQUARES == square, int(player), self._cells))
 
     def outcome(self) -> Outcome:
-        total = self._cells[_LINES].sum(axis=1)
+        """Get winner and or detect draw in current board position."""
+        total = self._cells[_LINES].sum(axis=1) # sum the content of each winning line to see if +3 or -3 is achieved
         win = next(
             (player for player in Player if (total == 3 * int(player)).any()), None
         )
@@ -136,7 +155,10 @@ class Board:
 
 
 class Game:
-    """A board with move history"""
+    """A board with the ordered move history leading to it
+    Becasue the reservoir reads games move by move, the same board position can be reached by
+    different move orders, giving different network states.
+    """
 
     __slots__ = ("board", "moves")
 
@@ -146,17 +168,20 @@ class Game:
 
     @classmethod
     def from_moves(cls, moves: Sequence[Move]) -> Game:
+        """Replay moves from empty board"""
         return reduce(
             lambda game, move: game.play(move.square, move.player), moves, cls()
         )
 
     def play(self, square: int, player: Player | None = None) -> Game:
+        """Return a new game with a new move appended"""
         player = player if player is not None else self.board.turn()
         return Game(
             self.board.play(square, player), (*self.moves, Move(square, player))
         )
 
     def inputs(self) -> Iterator[np.ndarray]:
+        """Input for the reservoir for each move"""
         return (move.one_hot() for move in self.moves)
 
     def __len__(self) -> int:
